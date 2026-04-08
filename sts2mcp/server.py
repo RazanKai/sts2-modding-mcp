@@ -60,7 +60,7 @@ async def _call_bridge(func, *args, **kwargs):
 
 @server.list_tools()
 async def list_tools() -> list[types.Tool]:
-    return [
+    tools_list = [
         # ── Game Data Query Tools ──
         types.Tool(
             name="list_entities",
@@ -3337,6 +3337,11 @@ async def list_tools() -> list[types.Tool]:
             },
         ),
     ]
+    include_filter = os.environ.get("STS2MCP_INCLUDE_TOOLS")
+    if include_filter:
+        allowed = set(t.strip() for t in include_filter.split(","))
+        return [t for t in tools_list if t.name in allowed]
+    return tools_list
 
 
 # ─── Tool Handlers ───────────────────────────────────────────────────────────
