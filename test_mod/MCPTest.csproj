@@ -11,7 +11,8 @@
     <!-- Platform-specific data subfolder names -->
     <Sts2DataDir Condition="$([MSBuild]::IsOSPlatform('Windows'))">data_sts2_windows_x86_64</Sts2DataDir>
     <Sts2DataDir Condition="$([MSBuild]::IsOSPlatform('Linux')) And Exists('$(Sts2GameDir)/data_sts2_linuxbsd_x86_64')">data_sts2_linuxbsd_x86_64</Sts2DataDir>
-    <Sts2DataDir Condition="$([MSBuild]::IsOSPlatform('Linux')) And '$(Sts2DataDir)' == ''">data_sts2_linux_x86_64</Sts2DataDir>
+    <Sts2DataDir Condition="$([MSBuild]::IsOSPlatform('Linux')) And Exists('$(Sts2GameDir)/data_sts2_linux_x86_64')">data_sts2_linux_x86_64</Sts2DataDir>
+    <Sts2DataDir Condition="'$(Sts2DataDir)' == ''">data_sts2_windows_x86_64</Sts2DataDir>
     <Sts2DataDir Condition="$([MSBuild]::IsOSPlatform('OSX'))">data_sts2_macos_arm64</Sts2DataDir>
     <Sts2Dir>$(Sts2GameDir)/$(Sts2DataDir)</Sts2Dir>
   </PropertyGroup>

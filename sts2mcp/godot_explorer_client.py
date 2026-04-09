@@ -9,7 +9,53 @@ import json
 import socket
 from typing import Any
 
-EXPLORER_HOST = "127.0.0.1"
+import os
+import re
+
+def _get_explorer_candidates():
+    """Detect possible explorer hosts (Windows IPs from WSL, and localhost)."""
+    candidates = []
+    
+    # Allow environment variable override
+    env_host = os.environ.get("STS2_EXPLORER_HOST")
+    if env_host:
+        return [env_host]
+
+    # In WSL, try to find the host IPs
+    if os.path.exists("/proc/version"):
+        with open("/proc/version", "r") as f:
+            if "microsoft" in f.read().lower():
+                # Try ip route (gateway)
+                try:
+                    result = subprocess.run(["ip", "route", "show", "default"], capture_output=True, text=True)
+                    if result.returncode == 0:
+                        match = re.search(r"default via ([\d\.]+)", result.stdout)
+                        if match:
+                            addr = match.group(1)
+                            if addr not in candidates: candidates.append(addr)
+                except Exception:
+                    pass
+
+                # Try common WSL subnets if not found
+                for subnet_prefix in ["172.17.16", "172.26.80", "192.168.240"]:
+                    addr = f"{subnet_prefix}.1"
+                    if addr not in candidates: candidates.append(addr)
+
+                # Fallback to resolv.conf
+                try:
+                    with open("/etc/resolv.conf", "r") as r:
+                        content = r.read()
+                        match = re.search(r"nameserver\s+([\d\.]+)", content)
+                        if match:
+                            addr = match.group(1)
+                            if addr not in candidates: candidates.append(addr)
+                except Exception:
+                    pass
+
+    if "127.0.0.1" not in candidates:
+        candidates.append("127.0.0.1")
+    return candidates
+
 EXPLORER_PORT = 27020
 TIMEOUT = 15.0
 MAX_RESPONSE_SIZE = 10 * 1024 * 1024  # 10 MB
@@ -26,50 +72,56 @@ def _get_id() -> int:
 
 def _send_rpc(method: str, params: dict | None = None) -> dict:
     """Send a JSON-RPC request to GodotExplorer and return the parsed response."""
-    request = {
-        "jsonrpc": "2.0",
-        "id": _get_id(),
-        "method": method,
-    }
-    if params is not None:
-        request["params"] = params
-
-    try:
-        with socket.create_connection((EXPLORER_HOST, EXPLORER_PORT), timeout=TIMEOUT) as sock:
-            sock.settimeout(TIMEOUT)
-            payload = json.dumps(request) + "\n"
-            sock.sendall(payload.encode("utf-8"))
-
-            # Read newline-delimited response
-            data = b""
-            while True:
-                chunk = sock.recv(RECV_BUFFER_SIZE)
-                if not chunk:
-                    break
-                data += chunk
-                if len(data) > MAX_RESPONSE_SIZE:
-                    return {"error": f"Response exceeded {MAX_RESPONSE_SIZE} bytes"}
-                if b"\n" in data:
-                    break
-
-        text = data.decode("utf-8-sig").strip()
-        if not text:
-            return {"error": "Empty response from GodotExplorer"}
-
-        return json.loads(text)
-
-    except ConnectionRefusedError:
-        return {
-            "error": (
-                "GodotExplorer not running (port 27020). "
-                "Launch the game — the GodotExplorer mod is auto-installed by this MCP. "
-                "Press F12 in-game to toggle the visual inspector."
-            )
+    candidates = _get_explorer_candidates()
+    last_error = None
+    
+    for host in candidates:
+        request = {
+            "jsonrpc": "2.0",
+            "id": _get_id(),
+            "method": method,
         }
-    except socket.timeout:
-        return {"error": "GodotExplorer timed out. Game may be loading or unresponsive."}
-    except Exception as e:
-        return {"error": f"GodotExplorer communication failed: {type(e).__name__}: {e}"}
+        if params is not None:
+            request["params"] = params
+
+        try:
+            # Use shorter timeout for probing connections
+            probe_timeout = 2.0 if len(candidates) > 1 else TIMEOUT
+            with socket.create_connection((host, EXPLORER_PORT), timeout=probe_timeout) as sock:
+                sock.settimeout(TIMEOUT)
+                payload = json.dumps(request) + "\n"
+                sock.sendall(payload.encode("utf-8"))
+
+                # Read newline-delimited response
+                data = b""
+                while True:
+                    chunk = sock.recv(RECV_BUFFER_SIZE)
+                    if not chunk:
+                        break
+                    data += chunk
+                    if len(data) > MAX_RESPONSE_SIZE:
+                        return {"error": f"Response exceeded {MAX_RESPONSE_SIZE} bytes"}
+                    if b"\n" in data:
+                        break
+
+            text = data.decode("utf-8-sig").strip()
+            if not text:
+                continue # Try next candidate
+                
+            return json.loads(text)
+
+        except (ConnectionRefusedError, socket.timeout, OSError) as e:
+            last_error = e
+            continue
+            
+    # If we get here, all candidates failed
+    return {
+        "error": (
+            f"GodotExplorer unreachable on {candidates}. "
+            f"Last error: {type(last_error).__name__}: {last_error}. "
+            "Please ensure game is running and GodotExplorer mod is enabled."
+        )
+    }
 
 
 def _call_tool(tool_name: str, arguments: dict | None = None) -> dict:
