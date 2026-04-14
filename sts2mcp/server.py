@@ -1974,9 +1974,9 @@ async def list_tools() -> list[types.Tool]:
                         "description": "Absolute path to the built mod DLL",
                     },
                     "tier": {
-                        "type": "integer",
-                        "enum": [1, 2, 3],
-                        "default": 2,
+                        "type": "string",
+                        "enum": ["1", "2", "3"],
+                        "default": "2",
                         "description": "Reload tier: 1=patches, 2=entities+patches+loc, 3=full+PCK",
                     },
                     "pck_path": {
@@ -4104,7 +4104,7 @@ async def _handle_tool(name: str, args: dict):
         return await _call_bridge(
             bridge_client.hot_reload,
             dll_path=args["dll_path"],
-            tier=args.get("tier", 2),
+            tier=int(args.get("tier", "2")),
             pck_path=args.get("pck_path", ""),
             pool_registrations=args.get("pool_registrations"),
         )
