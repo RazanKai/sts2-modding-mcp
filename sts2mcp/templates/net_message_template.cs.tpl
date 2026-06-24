@@ -13,6 +13,7 @@ public sealed class {class_name} : INetMessage, IPacketSerializable
     public bool ShouldBroadcast => {should_broadcast};
     public NetTransferMode Mode => NetTransferMode.{transfer_mode};
     public LogLevel LogLevel => LogLevel.VeryDebug;
+    public bool ShouldBuffer => true;
 
 {fields_declarations}
 
