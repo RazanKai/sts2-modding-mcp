@@ -1454,6 +1454,8 @@ public static class BridgeHandler
                 "treasure_pick" or "treasure_select" => ExecuteTreasureSelection(p),
                 "treasure_proceed" => ProceedCurrentScreen("treasure_proceed", "proceed", "continue", "open"),
                 "card_select" => ExecuteCardSelection(p),
+                "select_card_reward" => ExecuteCardRewardSelection(p),
+                "skip_card_reward" => DismissCardSelectionScreen(),
                 "card_confirm" => ConfirmCurrentScreen("card_confirm", "confirm", "proceed"),
                 "card_skip" => DismissCardSelectionScreen(),
                 "discard_potion" => DiscardPotion(p),
@@ -2147,6 +2149,38 @@ public static class BridgeHandler
             results,
             confirm = confirmResult,
         };
+    }
+
+
+    private static object ExecuteCardRewardSelection(JsonElement p)
+    {
+        var screen = ScreenDetector.GetCurrentScreen();
+        if (screen != "CARD_REWARD")
+            return new { error = $"Not in card reward selection (current screen: {screen})" };
+
+        var index = 0;
+        if (p.TryGetProperty("index", out var indexProp)) index = indexProp.GetInt32();
+        if (p.TryGetProperty("card_index", out var cardIndexProp)) index = cardIndexProp.GetInt32();
+        if (p.TryGetProperty("reward_index", out var rewardIndexProp)) index = rewardIndexProp.GetInt32();
+
+        var screenObj = GetActiveScreenObject();
+        if (screenObj == null) return new { error = "No active card reward screen object" };
+
+        if (screenObj is Godot.Node screenNode)
+        {
+            var cardRow = screenNode.GetNodeOrNull("UI/CardRow") ?? screenNode.GetNodeOrNull("%CardRow");
+            if (cardRow != null && index >= 0 && index < cardRow.GetChildCount())
+            {
+                var holder = cardRow.GetChild(index);
+                if (TryInvokeMethod(screenObj, ["SelectCard"], [holder], out var invokedMethod)
+                    || TryInvokeMethod(holder, ["ForceClick", "Click", "Select", "Choose", "Invoke"], Array.Empty<object?>(), out invokedMethod))
+                {
+                    return new { success = true, action = "select_card_reward", index, label = GetReadableLabel(holder), invoked = invokedMethod };
+                }
+            }
+        }
+
+        return new { success = false, action = "select_card_reward", index, error = "Could not select card reward holder" };
     }
 
     private static object ProceedCurrentScreen(string requestedAction, params string[] consoleFallbacks)
