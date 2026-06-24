@@ -196,11 +196,24 @@ def _get_game_search_roots(game_dir: str) -> list[str]:
 def find_game_binary(game_dir: str) -> str | None:
     """Find the game binary (sts2.dll/.so) inside a game directory. Returns path or None."""
     platform = sys.platform if sys.platform in _GAME_BINARY_CANDIDATES else "linux"
-    for root in _get_game_search_roots(game_dir):
+    roots = _get_game_search_roots(game_dir)
+
+    # Try current platform first
+    for root in roots:
         for subfolder, binary in _GAME_BINARY_CANDIDATES[platform]:
             p = os.path.join(root, subfolder, binary)
             if os.path.isfile(p):
                 return p
+
+    # Fallback: try all platforms (important for WSL/Proton/shared drives)
+    for root in roots:
+        for p_name, candidates in _GAME_BINARY_CANDIDATES.items():
+            if p_name == platform:
+                continue
+            for subfolder, binary in candidates:
+                p = os.path.join(root, subfolder, binary)
+                if os.path.isfile(p):
+                    return p
     return None
 
 

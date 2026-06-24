@@ -38,7 +38,7 @@ public class MCPServer
 
         try
         {
-            _listener = new TcpListener(IPAddress.Loopback, _port);
+            _listener = new TcpListener(IPAddress.Any, _port);
             _listener.Start();
             _running = true;
             Task.Run(() => AcceptClientsAsync(_cts.Token));
