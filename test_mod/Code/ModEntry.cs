@@ -27,6 +27,11 @@ public static class ModEntry
         System.Environment.GetFolderPath(System.Environment.SpecialFolder.ApplicationData),
         "MCPTest", "mcptest.log");
 
+    // Allows running a second game instance (e.g. for co-op testing) whose bridge doesn't collide
+    // with the default port. Set MCPTEST_BRIDGE_PORT before launching that instance.
+    private static readonly int Port =
+        int.TryParse(System.Environment.GetEnvironmentVariable("MCPTEST_BRIDGE_PORT"), out var p) ? p : 21337;
+
     public static void Init()
     {
         try
@@ -56,21 +61,32 @@ public static class ModEntry
                 AppDomain.CurrentDomain.GetAssemblies()
                     .FirstOrDefault(a => a.GetName().Name == name.Name);
 
-            // Register all custom relics
+            // Register all custom relics, in a fixed alphabetical-by-type-name order so pool
+            // concatenation order can never depend on declaration order or discovery timing.
+            // Set MCPTEST_INCLUDE_TEST_RELICS=0 to skip this registration entirely (e.g. for
+            // multi-instance co-op testing, where these debug-only fixture relics have nothing to
+            // do with the mod under test and only add risk of cross-process pool mismatches).
             try
             {
-                ModHelper.AddModelToPool<SharedRelicPool, McpTestRelic>();
-                ModHelper.AddModelToPool<SharedRelicPool, BloodPact>();
-                ModHelper.AddModelToPool<SharedRelicPool, GoldShield>();
-                ModHelper.AddModelToPool<SharedRelicPool, ThornArmor>();
-                ModHelper.AddModelToPool<SharedRelicPool, WarCry>();
-                ModHelper.AddModelToPool<SharedRelicPool, VampiricBlade>();
-                ModHelper.AddModelToPool<SharedRelicPool, SpellEcho>();
-                ModHelper.AddModelToPool<SharedRelicPool, BerserkerRage>();
-                ModHelper.AddModelToPool<SharedRelicPool, CounterStrike>();
-                ModHelper.AddModelToPool<SharedRelicPool, WeakeningAura>();
-                ModHelper.AddModelToPool<SharedRelicPool, HealingTouch>();
-                WriteLog("Registered 11 custom relics in SharedRelicPool.");
+                if (System.Environment.GetEnvironmentVariable("MCPTEST_INCLUDE_TEST_RELICS") != "0")
+                {
+                    ModHelper.AddModelToPool<SharedRelicPool, BerserkerRage>();
+                    ModHelper.AddModelToPool<SharedRelicPool, BloodPact>();
+                    ModHelper.AddModelToPool<SharedRelicPool, CounterStrike>();
+                    ModHelper.AddModelToPool<SharedRelicPool, GoldShield>();
+                    ModHelper.AddModelToPool<SharedRelicPool, HealingTouch>();
+                    ModHelper.AddModelToPool<SharedRelicPool, McpTestRelic>();
+                    ModHelper.AddModelToPool<SharedRelicPool, SpellEcho>();
+                    ModHelper.AddModelToPool<SharedRelicPool, ThornArmor>();
+                    ModHelper.AddModelToPool<SharedRelicPool, VampiricBlade>();
+                    ModHelper.AddModelToPool<SharedRelicPool, WarCry>();
+                    ModHelper.AddModelToPool<SharedRelicPool, WeakeningAura>();
+                    WriteLog("Registered 11 custom relics in SharedRelicPool (fixed order).");
+                }
+                else
+                {
+                    WriteLog("Skipped custom relic registration (MCPTEST_INCLUDE_TEST_RELICS=0).");
+                }
             }
             catch (Exception ex2)
             {
@@ -97,11 +113,11 @@ public static class ModEntry
             }
 
             StartBridgeServer();
-            WriteLog("Bridge server started on port 21337.");
+            WriteLog($"Bridge server started on port {Port}.");
 
-            Log.Warn("[MCPTest] v2.0 loaded! Bridge on port 21337.");
+            Log.Warn($"[MCPTest] v2.0 loaded! Bridge on port {Port}.");
             WriteLog("=== MCPTest v2.0 Loaded ===");
-            EventTracker.Record("mod_loaded", "MCPTest v2.0 loaded, bridge on port 21337");
+            EventTracker.Record("mod_loaded", $"MCPTest v2.0 loaded, bridge on port {Port}");
         }
         catch (Exception ex)
         {
@@ -140,7 +156,7 @@ public static class ModEntry
     {
         try
         {
-            _listener = new TcpListener(IPAddress.Loopback, 21337);
+            _listener = new TcpListener(IPAddress.Loopback, Port);
             _listener.Start();
             WriteLog("TCP listener started.");
 
