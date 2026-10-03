@@ -32,7 +32,7 @@ public sealed class BloodPact : RelicModel
         Owner.Creature.SetMaxHpInternal(Owner.Creature.MaxHp - 5);
         Owner.Creature.SetCurrentHpInternal(System.Math.Min(Owner.Creature.CurrentHp, Owner.Creature.MaxHp));
         // Gain 3 Strength
-        await PowerCmd.Apply<StrengthPower>(Owner.Creature, 3M, Owner.Creature, null);
+        await PowerCmd.Apply<StrengthPower>(new ThrowingPlayerChoiceContext(), Owner.Creature, 3M, Owner.Creature, null);
         ModEntry.WriteLog("[BloodPact] -5 max HP, +3 Strength");
     }
 }
@@ -64,7 +64,7 @@ public sealed class ThornArmor : RelicModel
     public override async Task BeforeCombatStart()
     {
         Flash();
-        await PowerCmd.Apply<ThornsPower>(Owner.Creature, 3M, Owner.Creature, null);
+        await PowerCmd.Apply<ThornsPower>(new ThrowingPlayerChoiceContext(), Owner.Creature, 3M, Owner.Creature, null);
         ModEntry.WriteLog("[ThornArmor] +3 Thorns");
     }
 }
@@ -86,7 +86,7 @@ public sealed class WarCry : RelicModel
         {
             if (enemy.IsAlive)
             {
-                await PowerCmd.Apply<VulnerablePower>(enemy, 1M, Owner.Creature, null);
+                await PowerCmd.Apply<VulnerablePower>(new ThrowingPlayerChoiceContext(), enemy, 1M, Owner.Creature, null);
             }
         }
         ModEntry.WriteLog("[WarCry] Applied Vulnerable to all enemies");
@@ -152,7 +152,7 @@ public sealed class BerserkerRage : RelicModel
 
         _triggeredThisCombat = true;
         Flash();
-        await PowerCmd.Apply<StrengthPower>(Owner.Creature, 3M, Owner.Creature, null);
+        await PowerCmd.Apply<StrengthPower>(new ThrowingPlayerChoiceContext(), Owner.Creature, 3M, Owner.Creature, null);
         ModEntry.WriteLog("[BerserkerRage] +3 Strength from first damage taken");
     }
 
@@ -205,7 +205,7 @@ public sealed class WeakeningAura : RelicModel
         {
             if (enemy.IsAlive)
             {
-                await PowerCmd.Apply<WeakPower>(enemy, 1M, Owner.Creature, null);
+                await PowerCmd.Apply<WeakPower>(new ThrowingPlayerChoiceContext(), enemy, 1M, Owner.Creature, null);
             }
         }
         ModEntry.WriteLog("[WeakeningAura] Applied Weak to all enemies");
@@ -222,7 +222,7 @@ public sealed class HealingTouch : RelicModel
     public override async Task BeforeCombatStart()
     {
         Flash();
-        await PowerCmd.Apply<RegenPower>(Owner.Creature, 3M, Owner.Creature, null);
+        await PowerCmd.Apply<RegenPower>(new ThrowingPlayerChoiceContext(), Owner.Creature, 3M, Owner.Creature, null);
         ModEntry.WriteLog("[HealingTouch] +3 Regen");
     }
 }

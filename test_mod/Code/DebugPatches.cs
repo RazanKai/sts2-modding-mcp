@@ -117,7 +117,9 @@ public static class DebugPatches
         [HarmonyPrefix]
         public static void BeforeCombatStart() => NotifyHook("BeforeCombatStart");
 
-        [HarmonyPatch(typeof(MegaCrit.Sts2.Core.Hooks.Hook), "BeforePlayPhaseStart")]
+        // Renamed in the 0.107.x API: the old BeforePlayPhaseStart hook is now
+        // AfterAutoPrePlayPhaseEntered, which fires as the play phase is entered.
+        [HarmonyPatch(typeof(MegaCrit.Sts2.Core.Hooks.Hook), "AfterAutoPrePlayPhaseEntered")]
         [HarmonyPrefix]
         public static void BeforePlayPhaseStart() => NotifyHook("BeforePlayPhaseStart");
 

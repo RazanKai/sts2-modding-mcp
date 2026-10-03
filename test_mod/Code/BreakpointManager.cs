@@ -369,7 +369,7 @@ public static class BreakpointManager
 
             var cm = CombatManager.Instance;
             state["in_combat"] = cm?.IsInProgress ?? false;
-            state["is_player_turn"] = cm?.IsPlayPhase ?? false;
+            state["is_player_turn"] = cm?.IsPlayPhase() ?? false;
 
             if (cm?.IsInProgress == true)
             {

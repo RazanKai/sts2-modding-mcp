@@ -221,6 +221,14 @@ public static class BridgeHandler
                 "start_foil_tilt" => MainThreadDispatcher.Invoke(() => StartFoilTilt()),
                 "stop_foil_tilt" => MainThreadDispatcher.Invoke(() => StopFoilTilt()),
                 "click_node" => MainThreadDispatcher.Invoke(() => ClickNode(root)),
+                "claim_all_rewards" => MainThreadDispatcher.Invoke(() => ClaimAllRewards()),
+                "card_reward_skip" => MainThreadDispatcher.Invoke(() => CardRewardSkip()),
+                "card_reward_pick" => MainThreadDispatcher.Invoke(() => CardRewardPick()),
+                "rewards_force_proceed" => MainThreadDispatcher.Invoke(() => RewardsForceProceed()),
+                "shop_force_leave" => MainThreadDispatcher.Invoke(() => ShopForceLeave()),
+                "coop_event_choose" => MainThreadDispatcher.Invoke(() => CoopEventChoose(root)),
+                "coop_rest_choose" => MainThreadDispatcher.Invoke(() => CoopRestChoose(root)),
+                "coop_treasure_pick" => MainThreadDispatcher.Invoke(() => CoopTreasurePick(root)),
                 "fmod_test" => MainThreadDispatcher.Invoke(() => FmodTest(root)),
                 _ => new { error = $"Unknown method: {method}" },
             };
@@ -256,7 +264,7 @@ public static class BridgeHandler
                 screen = ScreenDetector.GetCurrentScreen(),
                 run_in_progress = RunManager.Instance.IsInProgress,
                 in_combat = CombatManager.Instance?.IsInProgress ?? false,
-                is_player_turn = CombatManager.Instance?.IsPlayPhase ?? false,
+                is_player_turn = CombatManager.Instance?.IsPlayPhase() ?? false,
             });
         }
         catch (Exception ex)
@@ -486,7 +494,7 @@ public static class BridgeHandler
                 in_combat = true,
                 screen = "COMBAT_PLAYER_TURN",
                 round = combatState.RoundNumber,
-                is_player_turn = cm.IsPlayPhase,
+                is_player_turn = cm.IsPlayPhase(),
                 enemies,
                 players = playerStates,
             };
@@ -624,7 +632,7 @@ public static class BridgeHandler
             if (screen.StartsWith("COMBAT") || screen == "HAND_SELECT")
             {
                 var cm = CombatManager.Instance;
-                if (cm?.IsInProgress == true && cm.IsPlayPhase)
+                if (cm?.IsInProgress == true && cm.IsPlayPhase())
                 {
                     var combatState = cm.DebugOnlyGetState();
                     if (combatState != null)
@@ -803,7 +811,7 @@ public static class BridgeHandler
         try
         {
             var cm = CombatManager.Instance;
-            if (cm == null || !cm.IsInProgress || !cm.IsPlayPhase)
+            if (cm == null || !cm.IsInProgress || !cm.IsPlayPhase())
                 return new { error = "Not in combat or not player turn" };
 
             int cardIndex = 0;
@@ -869,7 +877,7 @@ public static class BridgeHandler
         try
         {
             var cm = CombatManager.Instance;
-            if (cm == null || !cm.IsInProgress || !cm.IsPlayPhase)
+            if (cm == null || !cm.IsInProgress || !cm.IsPlayPhase())
                 return new { error = "Not in combat or not player turn" };
 
             var state = RunManager.Instance.DebugOnlyGetState();
@@ -1489,7 +1497,7 @@ public static class BridgeHandler
                 screen_context_type = screenInfo.ActiveScreenType,
                 run_in_progress = RunManager.Instance.IsInProgress,
                 in_combat = CombatManager.Instance?.IsInProgress ?? false,
-                is_player_turn = CombatManager.Instance?.IsPlayPhase ?? false,
+                is_player_turn = CombatManager.Instance?.IsPlayPhase() ?? false,
                 floor = state?.TotalFloor,
                 act = state != null ? state.CurrentActIndex + 1 : (int?)null,
                 current_room = state?.CurrentRoom?.GetType().Name,
@@ -1781,9 +1789,11 @@ public static class BridgeHandler
 
     private static object ExecuteMapTravel(int row, int col)
     {
+        // Deliberately not gated on ScreenDetector: it reads the overlay stack, and a dismissed
+        // rewards screen lingers there. RunManager.ProceedFromTerminalRewardsScreen only calls
+        // NMapScreen.Open() without popping the overlay, so the map is genuinely interactive while
+        // the detector still reports REWARD. Let the travel attempt itself decide.
         var screen = ScreenDetector.GetCurrentScreen();
-        if (screen != "MAP")
-            return new { error = $"Not on map (current screen: {screen})" };
 
         if (!RunManager.Instance.IsInProgress)
             return new { error = "No run in progress" };
@@ -1959,7 +1969,7 @@ public static class BridgeHandler
         catch { }
 
         // Use the game's inventory API directly (like STS2MCP does)
-        var inventory = merchantRoom.Inventory;
+        var inventory = merchantRoom.GetLocalInventory();
         var allEntries = inventory.AllEntries.ToList();
 
         if (index < 0 || index >= allEntries.Count)
@@ -5283,7 +5293,7 @@ public static class BridgeHandler
         snapshot["in_combat"] = cm?.IsInProgress ?? false;
         if (cm?.IsInProgress == true)
         {
-            snapshot["is_player_turn"] = cm.IsPlayPhase;
+            snapshot["is_player_turn"] = cm.IsPlayPhase();
             var cs = cm.DebugOnlyGetState();
             if (cs != null)
             {
@@ -6794,6 +6804,314 @@ public static class BridgeHandler
         catch (Exception ex) { return new { error = ex.Message }; }
     }
 
+    /// <summary>
+    /// Claim every reward button currently on screen.
+    ///
+    /// NRewardsScreen only slides its ProceedButton into view once every reward has been claimed
+    /// or skipped (see its `_rewardButtons.Except(_skippedRewardButtons).Any()` gate) — until then
+    /// the button sits parked off-viewport and clicking it silently does nothing. reward_select's
+    /// reflection over the screen's _rewardButtons field comes back empty on this build, so this
+    /// walks the live scene tree for NRewardButton nodes instead and invokes their real handler.
+    /// Works identically on host and client, which matters for co-op where both peers must pick.
+    /// </summary>
+    private static object ClaimAllRewards()
+    {
+        try
+        {
+            var tree = GodotEngine.GetMainLoop() as SceneTree;
+            if (tree?.Root == null)
+                return new { error = "SceneTree not available" };
+
+            var buttons = new List<Node>();
+            var stack = new Stack<Node>();
+            stack.Push(tree.Root);
+            while (stack.Count > 0)
+            {
+                var n = stack.Pop();
+                if (n.GetType().Name == "NRewardButton")
+                    buttons.Add(n);
+                foreach (var c in n.GetChildren()) stack.Push(c);
+            }
+
+            var claimed = new List<string>();
+            foreach (var b in buttons)
+            {
+                if (TryInvokeMethod(b, ["OnRelease"], Array.Empty<object?>(), out _))
+                    claimed.Add(b.Name.ToString());
+            }
+            ModEntry.WriteLog($"[claim_all_rewards] found={buttons.Count} claimed={claimed.Count}");
+            return new { success = true, found = buttons.Count, claimed = claimed.Count, names = claimed };
+        }
+        catch (Exception ex) { return new { error = ex.Message }; }
+    }
+
+    /// <summary>
+    /// Dismiss an NCardRewardSelectionScreen by taking its "skip" alternative.
+    ///
+    /// The screen blocks on a TaskCompletionSource that is only resolved by SelectCard or
+    /// OnAlternateRewardSelected; neither is reachable through the existing bridge actions
+    /// (execute_action advertises `select_card_reward` but has no handler, and `card_select`
+    /// rejects the screen outright). Calling OnAlternateRewardSelected(0) resolves it with the
+    /// skip option, which is what the on-screen button does.
+    /// </summary>
+    private static object CardRewardSkip()
+    {
+        try
+        {
+            var tree = GodotEngine.GetMainLoop() as SceneTree;
+            if (tree?.Root == null)
+                return new { error = "SceneTree not available" };
+
+            Node? screen = null;
+            var stack = new Stack<Node>();
+            stack.Push(tree.Root);
+            while (stack.Count > 0 && screen == null)
+            {
+                var n = stack.Pop();
+                if (n.GetType().Name == "NCardRewardSelectionScreen") { screen = n; break; }
+                foreach (var c in n.GetChildren()) stack.Push(c);
+            }
+            if (screen == null)
+                return new { error = "No NCardRewardSelectionScreen in tree" };
+
+            if (TryInvokeMethod(screen, ["OnAlternateRewardSelected"], [0], out var m))
+            {
+                ModEntry.WriteLog("[card_reward_skip] skipped via " + m);
+                return new { success = true, invoked = m };
+            }
+            return new { error = "Could not invoke OnAlternateRewardSelected" };
+        }
+        catch (Exception ex) { return new { error = ex.Message }; }
+    }
+
+    /// <summary>
+    /// Take the first card on an NCardRewardSelectionScreen.
+    ///
+    /// Preferred over card_reward_skip: the skip path goes through OnAlternateRewardSelected,
+    /// which no-ops when the screen's _completionSource is null, leaving the overlay up forever.
+    /// SelectCard resolves the completion source with a concrete option index, which reliably
+    /// closes the screen and lets the run continue.
+    /// </summary>
+    private static object CardRewardPick()
+    {
+        try
+        {
+            var tree = GodotEngine.GetMainLoop() as SceneTree;
+            if (tree?.Root == null)
+                return new { error = "SceneTree not available" };
+
+            Node? screen = null;
+            var stack = new Stack<Node>();
+            stack.Push(tree.Root);
+            while (stack.Count > 0)
+            {
+                var n = stack.Pop();
+                if (n.GetType().Name == "NCardRewardSelectionScreen") { screen = n; break; }
+                foreach (var c in n.GetChildren()) stack.Push(c);
+            }
+            if (screen == null)
+                return new { error = "No NCardRewardSelectionScreen in tree" };
+
+            // Card holders live under the screen; match by type rather than node name because
+            // the holders are named after the card they carry (GridCardHolder-CARD_IRON_WAVE).
+            Node? holder = null;
+            var s2 = new Stack<Node>();
+            s2.Push(screen);
+            while (s2.Count > 0)
+            {
+                var n = s2.Pop();
+                if (n.GetType().Name.Contains("CardHolder")) { holder = n; break; }
+                foreach (var c in n.GetChildren()) s2.Push(c);
+            }
+            if (holder == null)
+                return new { error = "No card holder found under card reward screen" };
+
+            if (TryInvokeMethod(screen, ["SelectCard"], [holder], out var m))
+            {
+                ModEntry.WriteLog($"[card_reward_pick] picked {holder.Name} via {m}");
+                return new { success = true, picked = holder.Name.ToString(), invoked = m };
+            }
+            return new { error = "Could not invoke SelectCard", holder = holder.Name.ToString() };
+        }
+        catch (Exception ex) { return new { error = ex.Message }; }
+    }
+
+    /// <summary>
+    /// Close an NRewardsScreen by invoking its proceed handler directly.
+    ///
+    /// The screen wires ProceedButton's `Released` signal to OnProceedButtonPressed, and parks the
+    /// button off-viewport (x beyond screen width) until it is enabled — so ForceClick on the node
+    /// reports success while doing nothing. Calling the handler is what actually advances.
+    /// </summary>
+    private static object RewardsForceProceed()
+    {
+        try
+        {
+            var tree = GodotEngine.GetMainLoop() as SceneTree;
+            if (tree?.Root == null)
+                return new { error = "SceneTree not available" };
+
+            Node? screen = null;
+            var stack = new Stack<Node>();
+            stack.Push(tree.Root);
+            while (stack.Count > 0)
+            {
+                var n = stack.Pop();
+                if (n.GetType().Name == "NRewardsScreen") { screen = n; break; }
+                foreach (var c in n.GetChildren()) stack.Push(c);
+            }
+            if (screen == null)
+                return new { error = "No NRewardsScreen in tree" };
+
+            var btn = screen.GetNodeOrNull("ProceedButton");
+            if (TryInvokeMethod(screen, ["OnProceedButtonPressed"], [btn], out var m))
+            {
+                ModEntry.WriteLog("[rewards_force_proceed] via " + m);
+                return new { success = true, invoked = m };
+            }
+            return new { error = "Could not invoke OnProceedButtonPressed" };
+        }
+        catch (Exception ex) { return new { error = ex.Message }; }
+    }
+
+    /// <summary>
+    /// Leave a merchant screen by invoking NMerchantInventory.Close() directly, for the same
+    /// reason rewards need rewards_force_proceed: the bridge's shop_proceed drives a UI control
+    /// that reports success without closing the overlay.
+    /// </summary>
+    private static object ShopForceLeave()
+    {
+        try
+        {
+            var tree = GodotEngine.GetMainLoop() as SceneTree;
+            if (tree?.Root == null)
+                return new { error = "SceneTree not available" };
+
+            Node? inv = null;
+            var stack = new Stack<Node>();
+            stack.Push(tree.Root);
+            while (stack.Count > 0)
+            {
+                var n = stack.Pop();
+                if (n.GetType().Name == "NMerchantInventory") { inv = n; break; }
+                foreach (var c in n.GetChildren()) stack.Push(c);
+            }
+            if (inv == null)
+                return new { error = "No NMerchantInventory in tree" };
+
+            if (TryInvokeMethod(inv, ["Close"], Array.Empty<object?>(), out var m))
+            {
+                ModEntry.WriteLog("[shop_force_leave] via " + m);
+                return new { success = true, invoked = m };
+            }
+            return new { error = "Could not invoke Close" };
+        }
+        catch (Exception ex) { return new { error = ex.Message }; }
+    }
+
+    // ─── Co-op safe room interactions ──────────────────────────────────────
+    //
+    // The generic event/rest/treasure handlers reach into the *screen* object by guessing method
+    // names, which lands on the raw effect methods (e.g. EventOption.Chosen()). Those apply the
+    // outcome to the local process only and never emit the network message, so each peer resolves
+    // the room against its own copy and the run desyncs the moment the room is exited (the game
+    // checksums there). Everything below goes through the same synchronizer entry point the real
+    // UI buttons use, which both applies locally *and* tells the other peer.
+
+    private static int ParamInt(JsonElement root, string name, int fallback)
+    {
+        if (root.TryGetProperty("params", out var p) && p.TryGetProperty(name, out var v))
+            return v.GetInt32();
+        return fallback;
+    }
+
+    private static object? RunManagerInstance()
+    {
+        var t = Type.GetType("MegaCrit.Sts2.Core.Runs.RunManager, sts2");
+        return t?.GetProperty("Instance", BindingFlags.Public | BindingFlags.Static)?.GetValue(null);
+    }
+
+    private static object? GetSynchronizer(string propertyName)
+    {
+        var rm = RunManagerInstance();
+        return rm?.GetType()
+                 .GetProperty(propertyName, BindingFlags.Public | BindingFlags.Instance)
+                 ?.GetValue(rm);
+    }
+
+    /// <summary>Choose an event option the way NEventRoom.OptionButtonClicked does.</summary>
+    private static object CoopEventChoose(JsonElement root)
+    {
+        try
+        {
+            var index = ParamInt(root, "choice_index", ParamInt(root, "index", 0));
+            var sync = GetSynchronizer("EventSynchronizer");
+            if (sync == null)
+                return new { error = "EventSynchronizer unavailable" };
+            if (TryInvokeMethod(sync, ["ChooseLocalOption"], [index], out var m))
+            {
+                ModEntry.WriteLog($"[coop_event_choose] index={index} via {m}");
+                return new { success = true, choice_index = index, invoked = m };
+            }
+            return new { error = "Could not invoke EventSynchronizer.ChooseLocalOption" };
+        }
+        catch (Exception ex) { return new { error = ex.Message }; }
+    }
+
+    /// <summary>Choose a rest-site option the way NRestSiteButton does.</summary>
+    private static object CoopRestChoose(JsonElement root)
+    {
+        try
+        {
+            var index = ParamInt(root, "index", 0);
+            var sync = GetSynchronizer("RestSiteSynchronizer");
+            if (sync == null)
+                return new { error = "RestSiteSynchronizer unavailable" };
+            if (TryInvokeMethod(sync, ["ChooseLocalOption"], [index], out var m))
+            {
+                ModEntry.WriteLog($"[coop_rest_choose] index={index} via {m}");
+                return new { success = true, index, invoked = m };
+            }
+            return new { error = "Could not invoke RestSiteSynchronizer.ChooseLocalOption" };
+        }
+        catch (Exception ex) { return new { error = ex.Message }; }
+    }
+
+    /// <summary>Pick (or skip) a treasure relic through TreasureRoomRelicSynchronizer.</summary>
+    private static object CoopTreasurePick(JsonElement root)
+    {
+        try
+        {
+            var sync = GetSynchronizer("TreasureRoomRelicSynchronizer");
+            if (sync == null)
+                return new { error = "TreasureRoomRelicSynchronizer unavailable" };
+
+            var skip = false;
+            if (root.TryGetProperty("params", out var p) && p.TryGetProperty("skip", out var sv))
+                skip = sv.ValueKind == JsonValueKind.True;
+
+            if (skip)
+            {
+                if (TryInvokeMethod(sync, ["SkipRelicLocally"], Array.Empty<object?>(), out var ms))
+                {
+                    ModEntry.WriteLog("[coop_treasure_pick] skipped via " + ms);
+                    return new { success = true, skipped = true, invoked = ms };
+                }
+                return new { error = "Could not invoke SkipRelicLocally" };
+            }
+
+            var index = ParamInt(root, "index", 0);
+            // PickRelicLocally takes int? so the boxed int must convert to Nullable<int>.
+            if (TryInvokeMethod(sync, ["PickRelicLocally"], [index], out var m))
+            {
+                ModEntry.WriteLog($"[coop_treasure_pick] index={index} via {m}");
+                return new { success = true, index, invoked = m };
+            }
+            return new { error = "Could not invoke PickRelicLocally" };
+        }
+        catch (Exception ex) { return new { error = ex.Message }; }
+    }
+
     private static object ClickNode(JsonElement root)
     {
         try
@@ -6811,16 +7129,19 @@ public static class BridgeHandler
             if (node == null)
                 return new { error = $"Node not found: {path}" };
 
-            // Try emitting pressed signal (for BaseButton subclasses)
+            // Try emitting pressed signal (for BaseButton subclasses). Some screens (e.g. the
+            // multiplayer debug test scene) connect handlers to button_up instead of pressed, so
+            // emit both to cover either wiring.
             if (node is BaseButton button)
             {
                 button.EmitSignal("pressed");
-                ModEntry.WriteLog($"[click_node] Emitted 'pressed' on BaseButton at {path}");
-                return new { success = true, path, node_type = node.GetType().Name, method = "EmitSignal(pressed)" };
+                button.EmitSignal("button_up");
+                ModEntry.WriteLog($"[click_node] Emitted 'pressed'+'button_up' on BaseButton at {path}");
+                return new { success = true, path, node_type = node.GetType().Name, method = "EmitSignal(pressed+button_up)" };
             }
 
             // Try calling Pressed, OnPressed, etc.
-            if (TryInvokeMethod(node, ["Pressed", "OnPressed", "_Pressed", "OnClicked", "Click"], Array.Empty<object?>(), out var invokedMethod))
+            if (TryInvokeMethod(node, ["Pressed", "OnPressed", "_Pressed", "OnClicked", "Click", "OnRelease"], Array.Empty<object?>(), out var invokedMethod))
             {
                 ModEntry.WriteLog($"[click_node] Invoked {invokedMethod} on {path}");
                 return new { success = true, path, node_type = node.GetType().Name, method = invokedMethod };
